@@ -1,218 +1,90 @@
-df = pd.read_csv(TA_csv, parse_dates=['Date'], encoding='utf-8-sig')
-df = df.sort_values(['Code', 'Date']).reset_index(drop=True)
-df = df[df['Date'] > '2025-04-01']
+import pandas as pd
+import numpy as np
 
-# 8) ret_1~ret_5, ret_avg_1~ret_avg_5 계산
-for n in range(1, 6):
-    df[f'ret_{n}'] = df.groupby('Code')['Close'].shift(-n) / df['Close'] - 1
-    cols = [f'ret_{i}' for i in range(1, n+1)]
-    df[f'ret_avg_{n}'] = df[cols].mean(axis=1)
+# 1) 미래 수익률 & 평균 수익률 계산
+def compute_future_returns(df, days=[1,2,3,4,5]):
+    for d in days:
+        df[f"ret_{d}"] = (
+            df.groupby("Code")["Close"]
+              .shift(-d)
+              .div(df["Close"])
+              .sub(1)
+        )
+    for d in days:
+        cols = [f"ret_{i}" for i in range(1, d+1)]
+        df[f"ret_avg_{d}"] = df[cols].mean(axis=1)
+    return df
 
-# 9) 분석 대상 컬럼 분리
-base_cols    = ["Code","Company","Date","Open","High","Low","Close","Volume","Change","Stage"]
+# 2) 중위 80% 제거 후 50개 균등 개수 세그먼트
+def segment_by_rank(df, ind_col,
+                    lower_pct=0.10, upper_pct=0.90, n_segments=50):
+    df = df.copy()
+    df["rank_pct"] = df[ind_col].rank(method="first", pct=True)
+    mask = df["rank_pct"].between(lower_pct, upper_pct)
+    df_mid = df[mask].copy()
+    df_mid["segment"] = pd.qcut(
+        df_mid[ind_col], q=n_segments, labels=False, duplicates="drop"
+    )
+    df = df.merge(
+        df_mid[["segment"]],
+        left_index=True, right_index=True,
+        how="left"
+    ).drop(columns="rank_pct")
+    return df
 
-ret_cols     = [f"ret_{i}" for i in range(1,3)]
-avg_cols     = [f"ret_avg_{i}" for i in range(1,3)]
-exclude_cols = base_cols + ret_cols + avg_cols
-ind_cols     = [c for c in df.columns if c not in exclude_cols]
+# 3) 세그먼트별 메트릭 집계
+def compute_segment_metrics(df, indicators, days=[1,2,3,4,5],
+                            lower_pct=0.10, upper_pct=0.90, n_segments=50):
+    records = []
+    for ind in indicators:
+        df_ind = segment_by_rank(
+            df, ind_col=ind,
+            lower_pct=lower_pct, upper_pct=upper_pct,
+            n_segments=n_segments
+        )
+        df_ind[f"{ind}_dir"] = df_ind[ind].diff() > 0
 
-# 10) Stage별, indicator별 히트율 계산
-stage_counts = df['Stage'].value_counts().to_dict()
-results = []
-
-for stage in stage_counts:
-    mask_stage = df['Stage'] == stage
-    for col in ind_cols:
-        ser = pd.to_numeric(df[col], errors='coerce').dropna()
-        if ser.empty: 
-            continue
-
-        p10, p90 = np.nanpercentile(ser, [10, 90])
-        if np.isnan(p10) or np.isnan(p90) or p10 >= p90:
-            p10, p90 = ser.min(), ser.max()
-
-        bins    = np.linspace(p10, p90, 51)
-        sig_ind = df[col] > 0
-
-        for i in range(50):
-            lo, hi = bins[i], bins[i+1]
-            if i < 49:
-                mask_bin = (df[col] >= lo) & (df[col] < hi)
-            else:
-                mask_bin = (df[col] >= lo) & (df[col] <= hi)
-
-            mask_bs   = mask_stage & mask_bin
-            bin_count = mask_bs.sum()
-            if bin_count == 0:
-                continue
-
-            for N in range(1, 6):
-                sig_price = df[f'ret_avg_{N}'] > 0
-                hits      = ((mask_bs & sig_ind) & sig_price).sum()
-                hit_rate  = hits / bin_count
-
-                results.append({
-                    "Stage":     stage,
-                    "indicator": col,
-                    "N_days":    N,
-                    "bin_index": i+1,
-                    "bin_lo":    lo,
-                    "bin_hi":    hi,
-                    "bin_count": int(bin_count),
-                    "hit_count": int(hits),
-                    "hit_rate":  hit_rate
-                })
-
-# 11) DataFrame 변환 및 의미 있는 세그먼트 추출
-res_df       = pd.DataFrame(results)
-threshold    = 0.75
-min_length   = 5
-total_non_na = df[ind_cols].count().to_dict()
-segments     = []
-
-for (stage, ind, N), grp in res_df.groupby(['Stage','indicator','N_days']):
-    grp = grp.sort_values('bin_index').reset_index(drop=True)
-    hr  = grp['hit_rate'].values
-    hr_ext = hr.copy()
-    for i in range(1, len(hr)-1):
-        if hr[i] < threshold and hr[i-1] >= threshold and hr[i+1] >= threshold:
-            hr_ext[i] = threshold
-    mask = hr_ext >= threshold
-
-    start = None
-    for i, flag in enumerate(mask):
-        if flag and start is None:
-            start = i
-        elif not flag and start is not None:
-            seg = grp.loc[start:i-1]
-            length = seg.bin_index.iloc[-1] - seg.bin_index.iloc[0]
-            if length >= min_length:
-                seg_count       = seg.bin_count.sum()
-                seg_hit_count   = seg.hit_count.sum()
-                lo, hi          = seg.bin_lo.iloc[0], seg.bin_hi.iloc[-1]
-                overall_pct     = seg_count / total_non_na[ind]
-                mask_hits       = (
-                    (df.Stage == stage) &
-                    (df[ind] >= lo) & (df[ind] <= hi) &
-                    (df[ind] > 0) &
-                    (df[f'ret_avg_{N}'] > 0)
-                )
-                seg_hit_return  = df.loc[mask_hits, f'ret_avg_{N}'].mean()
-                segments.append({
-                    "Stage":             stage,
-                    "indicator":         ind,
-                    "N_days":            N,
-                    "bin_start":         int(seg.bin_index.iloc[0]),
-                    "bin_end":           int(seg.bin_index.iloc[-1]),
-                    "seg_lo":            float(lo),
-                    "seg_hi":            float(hi),
-                    "seg_count":         int(seg_count),
-                    "seg_hit_count":     int(seg_hit_count),
-                    "seg_hit_rate":      float(seg.hit_rate.mean()),
-                    "seg_hit_pct":       seg_hit_count / seg_count,
-                    "seg_hit_return_avg": seg_hit_return,
-                    "overall_pct":       overall_pct
-                })
-            start = None
-    # 마지막 열린 세그먼트 처리
-    if start is not None:
-        seg = grp.loc[start:]
-        length = seg.bin_index.iloc[-1] - seg.bin_index.iloc[0]
-        if length >= min_length:
-            seg_count       = seg.bin_count.sum()
-            seg_hit_count   = seg.hit_count.sum()
-            lo, hi          = seg.bin_lo.iloc[0], seg.bin_hi.iloc[-1]
-            overall_pct     = seg_count / total_non_na[ind]
-            mask_hits       = (
-                (df.Stage == stage) &
-                (df[ind] >= lo) & (df[ind] <= hi) &
-                (df[ind] > 0) &
-                (df[f'ret_avg_{N}'] > 0)
+        for d in days:
+            ret_col = f"ret_avg_{d}"
+            grp = (
+                df_ind
+                .dropna(subset=["segment", f"{ind}_dir", ret_col])
+                .groupby(["Stage", "segment"])
             )
-            seg_hit_return  = df.loc[mask_hits, f'ret_avg_{N}'].mean()
-            segments.append({
-                "Stage":             stage,
-                "indicator":         ind,
-                "N_days":            N,
-                "bin_start":         int(seg.bin_index.iloc[0]),
-                "bin_end":           int(seg.bin_index.iloc[-1]),
-                "seg_lo":            float(lo),
-                "seg_hi":            float(hi),
-                "seg_count":         int(seg_count),
-                "seg_hit_count":     int(seg_hit_count),
-                "seg_hit_rate":      float(seg.hit_rate.mean()),
-                "seg_hit_pct":       seg_hit_count / seg_count,
-                "seg_hit_return_avg": seg_hit_return,
-                "overall_pct":       overall_pct
-            })
+            agg = grp.agg(
+                total_count = ("segment",    "size"),
+                pos_match   = (f"{ind}_dir", "sum"),
+                mean_return = (ret_col,      "mean"),
+                neg3_count  = (ret_col,      lambda x: (x <= -0.03).sum()),
+                min_return  = (ret_col,      "min")
+            ).reset_index()
+            agg["pos_ratio"]  = agg["pos_match"]  / agg["total_count"]
+            agg["neg3_ratio"] = agg["neg3_count"] / agg["total_count"]
+            agg["indicator"]  = ind
+            agg["day"]        = d
+            records.append(agg)
 
-# 12) segment 계산 결과 저장
-seg_df     = pd.DataFrame(segments)
-seg_df.to_csv(SEGMENT_csv, index=False, encoding='utf-8-sig')
+    return pd.concat(records, ignore_index=True)
 
-# 12-1) indicator별 최소 5개 세그먼트 & overall_pct>=0.01 필터링
-valid_inds = seg_df.groupby('indicator').size().loc[lambda x: x>=5].index
-final_df   = seg_df[seg_df.indicator.isin(valid_inds)]
+# ──────────────────────────────────────────────────────────────────────
 
-# overall_pct 1% 미만 제거
-final_df   = final_df[final_df['overall_pct'] >= 0.01]
+# 파이프라인 실행 예시
 
-# 13) 정렬 및 컬럼 순서 재배열
-final_df = final_df.sort_values(['Stage','N_days','indicator'])\
-                   .reset_index(drop=True)
+# A) 데이터 로드 및 기본 전처리
+df = pd.read_parquet("TA_values.All.parquet")
+df["Date"] = pd.to_datetime(df["Date"])
+df.reset_index(drop=True, inplace=True)
 
-cols_order = ['Stage','N_days','indicator'] + \
-             [c for c in final_df.columns if c not in ['Stage','N_days','indicator']]
-final_df = final_df[cols_order]
+df = compute_future_returns(df, days=[1,2,3,4,5])
 
-# 13.1) Stage별 서브프레임 캐싱
-stage_cache = {
-    stage: sub.copy()
-    for stage, sub in df.groupby('Stage')
-}
+# 자동 추출한 지표 리스트로 분석
+seg_metrics = compute_segment_metrics(
+    df,
+    indicators=indicator_cols,
+    days=[1,2,3,4,5],
+    lower_pct=0.10,
+    upper_pct=0.90,
+    n_segments=50
+)
 
-# 13.2) 고속 손실 통계 계산 및 final_df에 컬럼 추가
-threshold = -0.02
-num_loss2_list    = []
-pct_loss2_list    = []
-worst_ret_list    = []
-
-for _, seg in final_df.iterrows():
-    # 1) Stage별 데이터
-    sub = stage_cache.get(seg.Stage)
-    if sub is None:
-        num_loss2_list.append(0)
-        pct_loss2_list.append(0.0)
-        worst_ret_list.append(np.nan)
-        continue
-
-    # 2) 세그먼트 지표 컬럼 필터
-    vals = sub[seg.indicator].values
-    mask = (vals >= seg.seg_lo) & (vals <= seg.seg_hi)
-
-    # 3) ret_avg_N 컬럼에서 수익률 배열 추출
-    col_ret = f"ret_avg_{int(seg.N_days)}"
-    rets    = sub.loc[mask, col_ret].values
-
-    # 4) –2% 이하 개수·비율·최악 수익률 계산
-    if rets.size:
-        cnt2  = (rets <= threshold).sum()
-        pct2  = cnt2 / rets.size * 100
-        worst = rets.min() * 100
-    else:
-        cnt2, pct2, worst = 0, 0.0, np.nan
-
-    num_loss2_list.append(int(cnt2))
-    pct_loss2_list.append(round(pct2, 2))
-    worst_ret_list.append(round(worst, 2))
-
-# 13.3) 결과를 final_df에 붙이기
-final_df['num_loss2']         = num_loss2_list
-final_df['pct_loss2 (%)']     = pct_loss2_list
-final_df['worst_return (%)']  = worst_ret_list
-
-# 14) 최종 저장
-print("손실 통계가 추가된 final_df 샘플:")
-print(final_df.head())
-
-final_df.to_csv(RANGE_csv, index=False, encoding='utf-8-sig')
+print(seg_metrics.head())
