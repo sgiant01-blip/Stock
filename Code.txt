@@ -1,100 +1,6 @@
-import pandas as pd
-import numpy as np
-import pandas_ta as ta
-
-def apply_indicator(df, result, prefix=None):
-    """
-    df       : 원본 DataFrame
-    result   : pandas Series 또는 DataFrame (지표 결과)
-    prefix   : Series 결과일 때 사용할 컬럼명
-    """
-    if isinstance(result, pd.Series):
-        df[prefix or result.name] = result
-    else:
-        df = df.join(result)
-    return df
-
-# 1) 원본 데이터 로드 및 Date 파싱
-dataName = 'data.base.csv'
-df = pd.read_csv(dataName, parse_dates=['Date'], encoding='utf-8-sig')
-
-# 2) 지표 계산을 위한 설정
-lengths = range(2, 10)
-indicator_cfg = [
-    (ta.aroon,    True,  None,               lambda d,l: {'high': d.High, 'low': d.Low,   'length': l}),
-    (ta.dm,       True,  None,               lambda d,l: {'high': d.High, 'low': d.Low,   'length': l}),
-    (ta.eri,      True,  None,               lambda d,l: {'high': d.High, 'low': d.Low,   'close': d.Close, 'length': l}),
-    (ta.efi,      True,  'EFI_{length}',     lambda d,l: {'close': d.Close, 'volume': d.Volume, 'length': l}),
-    (ta.ema,      True,  'EMA_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
-    (ta.ema,      True,  'VolEMA_{length}',  lambda d,l: {'close': d.Volume, 'length': l}),
-    (ta.roc,      True,  'ROC_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
-    (ta.psar,     False, None,               lambda d,l: {'high': d.High, 'low': d.Low}),
-    (ta.nvi,      True,  'NVI_{length}',     lambda d,l: {'close': d.Close, 'volume': d.Volume, 'length': l}),
-    (ta.cmf,      True,  'CMF_{length}',     lambda d,l: {'high': d.High, 'low': d.Low,   'close': d.Close, 'volume': d.Volume, 'length': l}),
-    (ta.ppo,      True,  'PPO_{length}',     lambda d,l: {'close': d.Close, 'fast': int(l*1.3), 'slow': int(l*3), 'signal': l}),
-    (ta.pvo,      True,  'PVO_{length}',     lambda d,l: {'volume': d.Volume, 'fast': int(l*1.3), 'slow': int(l*2.6), 'signal': l}),
-    (ta.rsi,      True,  'RSI_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
-    (ta.stoch,    True,  None,               lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'k': l, 'd': 3, 'smooth_k': 3}),
-    (ta.stochrsi, True,  None,               lambda d,l: {'close': d.Close, 'length': l, 'rsi_length': l, 'k': 3, 'd': 3}),
-    (ta.trix,     True,  None,               lambda d,l: {'close': d.Close, 'length': int(l*2), 'signal': l}),
-    (ta.uo,       True,  'UO_{length}',      lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'fast': l, 'medium': l*2, 'slow': l*3}),
-    (ta.willr,    True,  'WillR_{length}',   lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
-    (ta.psl,      True,  'PSI_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
-    (ta.adx,      True,  'ADX_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
-    (ta.cci,      True,  'CCI_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
-    (ta.macd,     True,  None,               lambda d,l: {'close': d.Close, 'fast': int(l*1.3), 'slow': int(l*3), 'signal': l}),
-    (ta.massi,    True,  'MassIndex_{length}', lambda d,l: {'high': d.High, 'low': d.Low, 'fast': l, 'slow': int(l*2.5)}),
-    (ta.ad,       False, 'ADLine',           lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'volume': d.Volume}),
-    (ta.adosc,    True,  'CO_{length}',      lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'volume': d.Volume, 'fast': 3, 'slow': l*2}),
-    (ta.eom,      True,  'EOM_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'volume': d.Volume, 'length': l}),
-    (ta.obv,      False, 'OBV',              lambda d,l: {'close': d.Close, 'volume': d.Volume}),
-    (ta.pvt,      False, 'PVT',              lambda d,l: {'close': d.Close, 'volume': d.Volume}),
-    (ta.atr,      True,  'ATR_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
-    (ta.bbands,   True,  None,               lambda d,l: {'close': d.Close, 'length': l}),
-    (ta.donchian, False, None,               lambda d,l: {'high': d.High, 'low': d.Low}),
-    (ta.kc,       True,  None,               lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
-    (ta.sma,      True,  'AvgVol_{length}',  lambda d,l: {'close': d.Volume, 'length': l}),
-]
-
-# 3) 지표 일괄 적용
-for func, per_len, name_fmt, kwargs_fn in indicator_cfg:
-    if func is ta.adx:
-        # DMP/DMN 컬럼 충돌 방지: ADX 시리즈만 추출
-        for l in lengths:
-            adx_ser = func(**kwargs_fn(df, l))[f'ADX_{l}']
-            df = apply_indicator(df, adx_ser, prefix=name_fmt.format(length=l))
-        continue
-
-    if per_len:
-        for l in lengths:
-            res = func(**kwargs_fn(df, l))
-            col = name_fmt.format(length=l) if name_fmt else None
-            df = apply_indicator(df, res, prefix=col)
-    else:
-        res = func(**kwargs_fn(df, None))
-        df = apply_indicator(df, res, prefix=name_fmt)
-
-# 4) Volume Ratio
-for l in lengths:
-    df[f'VRatio_{l}'] = df['Volume'] / df[f'AvgVol_{l}']
-
-# 5) Pivot Points
-df['Pivot']    = (df.High.shift(1) + df.Low.shift(1) + df.Close.shift(1)) / 3
-df['Pivot_R1'] = 2 * df.Pivot - df.Low.shift(1)
-df['Pivot_S1'] = 2 * df.Pivot - df.High.shift(1)
-df['Pivot_R2'] = df.Pivot + (df.High.shift(1) - df.Low.shift(1))
-df['Pivot_S2'] = df.Pivot - (df.High.shift(1) - df.Low.shift(1))
-
-# 6) Trend_value.csv, columns_only.csv 저장
-df.to_csv('TA_Value.csv', index=False, encoding='utf-8-sig')
-pd.Series(df.columns).to_csv('columns_only.csv', index=False,
-                            header=False, encoding='utf-8')
-print("지표 계산이 완료되었습니다.")
-
-# --- 여기까지가 지표 계산 파트 ---
-
-# 7) 세그먼트 분석을 위해 정렬 및 인덱스 리셋
+df = pd.read_csv(TA_csv, parse_dates=['Date'], encoding='utf-8-sig')
 df = df.sort_values(['Code', 'Date']).reset_index(drop=True)
+df = df[df['Date'] > '2025-04-01']
 
 # 8) ret_1~ret_5, ret_avg_1~ret_avg_5 계산
 for n in range(1, 6):
@@ -104,8 +10,9 @@ for n in range(1, 6):
 
 # 9) 분석 대상 컬럼 분리
 base_cols    = ["Code","Company","Date","Open","High","Low","Close","Volume","Change","Stage"]
-ret_cols     = [f"ret_{i}" for i in range(1,6)]
-avg_cols     = [f"ret_avg_{i}" for i in range(1,6)]
+
+ret_cols     = [f"ret_{i}" for i in range(1,3)]
+avg_cols     = [f"ret_avg_{i}" for i in range(1,3)]
 exclude_cols = base_cols + ret_cols + avg_cols
 ind_cols     = [c for c in df.columns if c not in exclude_cols]
 
@@ -239,8 +146,11 @@ for (stage, ind, N), grp in res_df.groupby(['Stage','indicator','N_days']):
                 "overall_pct":       overall_pct
             })
 
-# 12) indicator별 최소 5개 세그먼트 & overall_pct>=0.01 필터링
+# 12) segment 계산 결과 저장
 seg_df     = pd.DataFrame(segments)
+seg_df.to_csv(SEGMENT_csv, index=False, encoding='utf-8-sig')
+
+# 12-1) indicator별 최소 5개 세그먼트 & overall_pct>=0.01 필터링
 valid_inds = seg_df.groupby('indicator').size().loc[lambda x: x>=5].index
 final_df   = seg_df[seg_df.indicator.isin(valid_inds)]
 
@@ -255,8 +165,54 @@ cols_order = ['Stage','N_days','indicator'] + \
              [c for c in final_df.columns if c not in ['Stage','N_days','indicator']]
 final_df = final_df[cols_order]
 
-# 14) 출력 & 저장
-print("최종 유의미 세그먼트 (overall_pct>=1%) 작성이 완료되었습니다.")
+# 13.1) Stage별 서브프레임 캐싱
+stage_cache = {
+    stage: sub.copy()
+    for stage, sub in df.groupby('Stage')
+}
 
-final_df.to_csv('TA_segmented.csv',
-                index=False, encoding='utf-8-sig')
+# 13.2) 고속 손실 통계 계산 및 final_df에 컬럼 추가
+threshold = -0.02
+num_loss2_list    = []
+pct_loss2_list    = []
+worst_ret_list    = []
+
+for _, seg in final_df.iterrows():
+    # 1) Stage별 데이터
+    sub = stage_cache.get(seg.Stage)
+    if sub is None:
+        num_loss2_list.append(0)
+        pct_loss2_list.append(0.0)
+        worst_ret_list.append(np.nan)
+        continue
+
+    # 2) 세그먼트 지표 컬럼 필터
+    vals = sub[seg.indicator].values
+    mask = (vals >= seg.seg_lo) & (vals <= seg.seg_hi)
+
+    # 3) ret_avg_N 컬럼에서 수익률 배열 추출
+    col_ret = f"ret_avg_{int(seg.N_days)}"
+    rets    = sub.loc[mask, col_ret].values
+
+    # 4) –2% 이하 개수·비율·최악 수익률 계산
+    if rets.size:
+        cnt2  = (rets <= threshold).sum()
+        pct2  = cnt2 / rets.size * 100
+        worst = rets.min() * 100
+    else:
+        cnt2, pct2, worst = 0, 0.0, np.nan
+
+    num_loss2_list.append(int(cnt2))
+    pct_loss2_list.append(round(pct2, 2))
+    worst_ret_list.append(round(worst, 2))
+
+# 13.3) 결과를 final_df에 붙이기
+final_df['num_loss2']         = num_loss2_list
+final_df['pct_loss2 (%)']     = pct_loss2_list
+final_df['worst_return (%)']  = worst_ret_list
+
+# 14) 최종 저장
+print("손실 통계가 추가된 final_df 샘플:")
+print(final_df.head())
+
+final_df.to_csv(RANGE_csv, index=False, encoding='utf-8-sig')
