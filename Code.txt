@@ -1,0 +1,159 @@
+import os
+import pandas as pd
+import pandas_ta as ta
+from tqdm.auto import tqdm     # tqdm 임포트
+from datetime import datetime
+
+# ──────────────────────────────────────────────────
+# 0) 파일 및 파라미터 설정
+# ──────────────────────────────────────────────────
+RAW_CSV       = 'data.base.csv'
+File_Name = 'TA_values.Test.Ori'
+PARQUET_FILE  = File_Name + '.parquet'
+CSV_FILE  = File_Name + '.csv'
+DATE_COL      = 'Date'
+lengths       = [5, 14]  # 샘플 길이, 실제는 range(2,10) 등 설정
+indicator_cfg = [
+    # func,   name_fmt,       per_len, kwargs_fn
+    (ta.aroon,    True,  None,               lambda d,l: {'high': d.High, 'low': d.Low,   'length': l}),
+    (ta.dm,       True,  None,               lambda d,l: {'high': d.High, 'low': d.Low,   'length': l}),
+    (ta.eri,      True,  None,               lambda d,l: {'high': d.High, 'low': d.Low,   'close': d.Close, 'length': l}),
+    (ta.efi,      True,  'EFI_{length}',     lambda d,l: {'close': d.Close, 'volume': d.Volume, 'length': l}),
+    (ta.ema,      True,  'EMA_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
+    (ta.ema,      True,  'VolEMA_{length}',  lambda d,l: {'close': d.Volume, 'length': l}),
+    (ta.roc,      True,  'ROC_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
+    (ta.psar,     False, None,               lambda d,l: {'high': d.High, 'low': d.Low}),
+    (ta.nvi,      True,  'NVI_{length}',     lambda d,l: {'close': d.Close, 'volume': d.Volume, 'length': l}),
+    (ta.cmf,      True,  'CMF_{length}',     lambda d,l: {'high': d.High, 'low': d.Low,   'close': d.Close, 'volume': d.Volume, 'length': l}),
+    (ta.ppo,      True,  'PPO_{length}',     lambda d,l: {'close': d.Close, 'fast': int(l*1.3), 'slow': int(l*3), 'signal': l}),
+    (ta.pvo,      True,  'PVO_{length}',     lambda d,l: {'volume': d.Volume, 'fast': int(l*1.3), 'slow': int(l*2.6), 'signal': l}),
+    (ta.rsi,      True,  'RSI_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
+    (ta.stoch,    True,  None,               lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'k': l, 'd': 3, 'smooth_k': 3}),
+    (ta.stochrsi, True,  None,               lambda d,l: {'close': d.Close, 'length': l, 'rsi_length': l, 'k': 3, 'd': 3}),
+    (ta.trix,     True,  None,               lambda d,l: {'close': d.Close, 'length': int(l*2), 'signal': l}),
+    (ta.uo,       True,  'UO_{length}',      lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'fast': l, 'medium': l*2, 'slow': l*3}),
+    (ta.willr,    True,  'WillR_{length}',   lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
+    (ta.psl,      True,  'PSI_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
+    (ta.adx,      True,  'ADX_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
+    (ta.cci,      True,  'CCI_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
+    (ta.macd,     True,  None,               lambda d,l: {'close': d.Close, 'fast': int(l*1.3), 'slow': int(l*3), 'signal': l}),
+    (ta.massi,    True,  'MassIndex_{length}', lambda d,l: {'high': d.High, 'low': d.Low, 'fast': l, 'slow': int(l*2.5)}),
+    (ta.ad,       False, 'ADLine',           lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'volume': d.Volume}),
+    (ta.adosc,    True,  'CO_{length}',      lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'volume': d.Volume, 'fast': 3, 'slow': l*2}),
+    (ta.eom,      True,  'EOM_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'volume': d.Volume, 'length': l}),
+    (ta.obv,      False, 'OBV',              lambda d,l: {'close': d.Close, 'volume': d.Volume}),
+    (ta.pvt,      False, 'PVT',              lambda d,l: {'close': d.Close, 'volume': d.Volume}),
+    (ta.atr,      True,  'ATR_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
+    (ta.bbands,   True,  None,               lambda d,l: {'close': d.Close, 'length': l}),
+    (ta.donchian, False, None,               lambda d,l: {'high': d.High, 'low': d.Low}),
+    (ta.kc,       True,  None,               lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
+    (ta.sma,      True,  'AvgVol_{length}',  lambda d,l: {'close': d.Volume, 'length': l}),
+]
+
+# ──────────────────────────────────────────────────
+# 1) 기존 Parquet 결과 로드 (없으면 빈 DataFrame)
+# ──────────────────────────────────────────────────
+if os.path.exists(PARQUET_FILE):
+    df_old = pd.read_parquet(PARQUET_FILE)
+    df_old = df_old.loc[:, ~df_old.columns.duplicated()]
+
+    last_date = df_old[DATE_COL].max()
+else:
+    df_old = pd.DataFrame()
+    last_date = datetime(1900, 1, 1)
+
+# ──────────────────────────────────────────────────
+# 2) 신규 원본 데이터 로드 (증분)
+# ──────────────────────────────────────────────────
+df_raw = pd.read_csv(
+    RAW_CSV,
+    parse_dates=[DATE_COL],
+    encoding='utf-8-sig'
+)
+
+# last_date 이후 데이터만 처리
+df_new = df_raw[df_raw[DATE_COL] > last_date].reset_index(drop=True)
+if df_new.empty:
+    print("신규 데이터가 없습니다. 종료합니다.")
+    exit()
+
+# ──────────────────────────────────────────────────
+# 3) 지표 계산 (수작업 최적화)
+# ──────────────────────────────────────────────────
+results = {}
+
+# 전체 태스크(지표×길이 수)를 미리 계산
+total_tasks = sum((len(lengths) if per_len else 1)
+                  for _, _, per_len, _ in indicator_cfg)
+
+# 진행바 생성
+pbar = tqdm(total=total_tasks, desc='지표계산 진행', unit='task')
+
+# 지표 계산 루프
+series_list = []
+
+for func, per_len, name_fmt, kwargs_fn in indicator_cfg:
+    if per_len:
+        for l in lengths:
+            res = func(**kwargs_fn(df_new, l))
+            # Series 반환 시
+            if isinstance(res, pd.Series):
+                col = name_fmt.format(length=l)
+                res.name = col
+                series_list.append(res)
+            # DataFrame 반환 시
+            else:
+                for col in res.columns:
+                    tmp = res[col].copy()
+                    tmp.name = col
+                    series_list.append(tmp)
+            pbar.update(1)
+    else:
+        res = func(**kwargs_fn(df_new, None))
+        if isinstance(res, pd.Series):
+            series_list.append(res.rename(res.name))
+        else:
+            for col in res.columns:
+                tmp = res[col].copy()
+                tmp.name = col
+                series_list.append(tmp)
+        
+        # 진행바 업데이트           
+        pbar.update(1)
+
+pbar.close()
+
+# ──────────────────────────────────────────────────
+# 4) Pivot Points 예시 (shift 1회만)
+# ──────────────────────────────────────────────────
+h1 = df_new.High.shift(1)
+l1 = df_new.Low.shift(1)
+c1 = df_new.Close.shift(1)
+
+pivot = (h1 + l1 + c1) / 3
+series_list.append(pivot.rename('Pivot'))
+series_list.append((2*pivot - l1).rename('Pivot_R1'))
+series_list.append((2*pivot - h1).rename('Pivot_S1'))
+series_list.append((2*pivot - l1).rename('Pivot_R2'))
+series_list.append((2*pivot - h1).rename('Pivot_S2'))
+
+# ──────────────────────────────────────────────────
+# 5) 신규 지표 DataFrame 결합
+# ──────────────────────────────────────────────────
+df_ind_new = pd.concat(series_list, axis=1)
+df_final_new = pd.concat([df_new, df_ind_new], axis=1)
+
+# ──────────────────────────────────────────────────
+# 6) 기존 결과와 병합 후 Parquet 저장
+# ──────────────────────────────────────────────────
+if not df_old.empty:
+    df_out = pd.concat([df_old, df_final_new], ignore_index=True)
+else:
+    df_out = df_final_new
+
+# Parquet으로 저장 (컬럼 단위 압축 + 스키마 유지)
+
+df_out.to_parquet(PARQUET_FILE, index=False)
+df_out.to_csv(CSV_FILE, index=False, encoding='utf-8-sig')
+
+print(f"증분 지표 계산 완료: {len(df_final_new)} rows added. 총 {len(df_out)} rows 저장됨.")
