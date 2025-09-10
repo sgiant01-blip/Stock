@@ -1,159 +1,219 @@
 import os
 import pandas as pd
+import numpy as np
+# import FinanceDataReader as fdr 
+# import datetime, time
 import pandas_ta as ta
-from tqdm.auto import tqdm     # tqdm 임포트
+from tqdm.auto import tqdm
 from datetime import datetime
 
 # ──────────────────────────────────────────────────
-# 0) 파일 및 파라미터 설정
+# 설정
 # ──────────────────────────────────────────────────
-RAW_CSV       = 'data.base.csv'
-File_Name = 'TA_values.Test.Ori'
-PARQUET_FILE  = File_Name + '.parquet'
-CSV_FILE  = File_Name + '.csv'
-DATE_COL      = 'Date'
-lengths       = [5, 14]  # 샘플 길이, 실제는 range(2,10) 등 설정
-indicator_cfg = [
-    # func,   name_fmt,       per_len, kwargs_fn
-    (ta.aroon,    True,  None,               lambda d,l: {'high': d.High, 'low': d.Low,   'length': l}),
-    (ta.dm,       True,  None,               lambda d,l: {'high': d.High, 'low': d.Low,   'length': l}),
-    (ta.eri,      True,  None,               lambda d,l: {'high': d.High, 'low': d.Low,   'close': d.Close, 'length': l}),
-    (ta.efi,      True,  'EFI_{length}',     lambda d,l: {'close': d.Close, 'volume': d.Volume, 'length': l}),
-    (ta.ema,      True,  'EMA_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
-    (ta.ema,      True,  'VolEMA_{length}',  lambda d,l: {'close': d.Volume, 'length': l}),
-    (ta.roc,      True,  'ROC_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
-    (ta.psar,     False, None,               lambda d,l: {'high': d.High, 'low': d.Low}),
-    (ta.nvi,      True,  'NVI_{length}',     lambda d,l: {'close': d.Close, 'volume': d.Volume, 'length': l}),
-    (ta.cmf,      True,  'CMF_{length}',     lambda d,l: {'high': d.High, 'low': d.Low,   'close': d.Close, 'volume': d.Volume, 'length': l}),
-    (ta.ppo,      True,  'PPO_{length}',     lambda d,l: {'close': d.Close, 'fast': int(l*1.3), 'slow': int(l*3), 'signal': l}),
-    (ta.pvo,      True,  'PVO_{length}',     lambda d,l: {'volume': d.Volume, 'fast': int(l*1.3), 'slow': int(l*2.6), 'signal': l}),
-    (ta.rsi,      True,  'RSI_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
-    (ta.stoch,    True,  None,               lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'k': l, 'd': 3, 'smooth_k': 3}),
-    (ta.stochrsi, True,  None,               lambda d,l: {'close': d.Close, 'length': l, 'rsi_length': l, 'k': 3, 'd': 3}),
-    (ta.trix,     True,  None,               lambda d,l: {'close': d.Close, 'length': int(l*2), 'signal': l}),
-    (ta.uo,       True,  'UO_{length}',      lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'fast': l, 'medium': l*2, 'slow': l*3}),
-    (ta.willr,    True,  'WillR_{length}',   lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
-    (ta.psl,      True,  'PSI_{length}',     lambda d,l: {'close': d.Close, 'length': l}),
-    (ta.adx,      True,  'ADX_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
-    (ta.cci,      True,  'CCI_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
-    (ta.macd,     True,  None,               lambda d,l: {'close': d.Close, 'fast': int(l*1.3), 'slow': int(l*3), 'signal': l}),
-    (ta.massi,    True,  'MassIndex_{length}', lambda d,l: {'high': d.High, 'low': d.Low, 'fast': l, 'slow': int(l*2.5)}),
-    (ta.ad,       False, 'ADLine',           lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'volume': d.Volume}),
-    (ta.adosc,    True,  'CO_{length}',      lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'volume': d.Volume, 'fast': 3, 'slow': l*2}),
-    (ta.eom,      True,  'EOM_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'volume': d.Volume, 'length': l}),
-    (ta.obv,      False, 'OBV',              lambda d,l: {'close': d.Close, 'volume': d.Volume}),
-    (ta.pvt,      False, 'PVT',              lambda d,l: {'close': d.Close, 'volume': d.Volume}),
-    (ta.atr,      True,  'ATR_{length}',     lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
-    (ta.bbands,   True,  None,               lambda d,l: {'close': d.Close, 'length': l}),
-    (ta.donchian, False, None,               lambda d,l: {'high': d.High, 'low': d.Low}),
-    (ta.kc,       True,  None,               lambda d,l: {'high': d.High, 'low': d.Low, 'close': d.Close, 'length': l}),
-    (ta.sma,      True,  'AvgVol_{length}',  lambda d,l: {'close': d.Volume, 'length': l}),
-]
+FILE_IN      = 'DataKRX.csv'
+FILE_NAME    = 'TA_values.KRX'
+PARQUET_FILE = FILE_NAME + '.parquet'
+CSV_FILE     = FILE_NAME + '.csv'
+DATE_COL     = 'Date'
+lengths      = range(2, 10)
 
 # ──────────────────────────────────────────────────
-# 1) 기존 Parquet 결과 로드 (없으면 빈 DataFrame)
+# 1) 과거 결과 로드
 # ──────────────────────────────────────────────────
 if os.path.exists(PARQUET_FILE):
     df_old = pd.read_parquet(PARQUET_FILE)
     df_old = df_old.loc[:, ~df_old.columns.duplicated()]
-
     last_date = df_old[DATE_COL].max()
 else:
     df_old = pd.DataFrame()
     last_date = datetime(1900, 1, 1)
 
 # ──────────────────────────────────────────────────
-# 2) 신규 원본 데이터 로드 (증분)
+# 2) 신규 데이터 로드, 종목·날짜 정렬, 필터
 # ──────────────────────────────────────────────────
-df_raw = pd.read_csv(
-    RAW_CSV,
-    parse_dates=[DATE_COL],
-    encoding='utf-8-sig'
-)
+df_raw = pd.read_csv(FILE_IN, parse_dates=[DATE_COL], encoding='utf-8-sig')
+required_cols = [
+    'Code', 'Date', 'Open', 'High',
+    'Low', 'Close', 'Volume',
+    'Change', 'Stage']
 
-# last_date 이후 데이터만 처리
+df_raw = df_raw.dropna(subset=required_cols).reset_index(drop=True)
+df_raw['Date']  = pd.to_datetime(df_raw['Date'])
+df_raw['Stage'] = df_raw['Stage'].astype('category')
+
+df_raw = df_raw.sort_values(['Code', DATE_COL]).reset_index(drop=True)
 df_new = df_raw[df_raw[DATE_COL] > last_date].reset_index(drop=True)
 if df_new.empty:
     print("신규 데이터가 없습니다. 종료합니다.")
     exit()
 
-# ──────────────────────────────────────────────────
-# 3) 지표 계산 (수작업 최적화)
-# ──────────────────────────────────────────────────
-results = {}
+#추세 지표
+kind = '추세'
+taName = 'Aroon'
+dfs = dfsA.copy()
+dfs2 = pd.DataFrame()   
 
-# 전체 태스크(지표×길이 수)를 미리 계산
-total_tasks = sum((len(lengths) if per_len else 1)
-                  for _, _, per_len, _ in indicator_cfg)
+for i in lengths :
+    dfs2 = ta.aroon(high = dfs['High'], low = dfs['Low'], length = i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
 
-# 진행바 생성
-pbar = tqdm(total=total_tasks, desc='지표계산 진행', unit='task')
+taName = "DMI"
+for i in lengths :
+    dfs2 = ta.dm(high = dfs['High'], low = dfs['Low'], length = i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
 
-# 지표 계산 루프
-series_list = []
+taName = "ElderRay"
+for i in lengths :
+    dfs2 = ta.eri(high = dfs['High'], low = dfs['Low'], close = dfs['Close'], length = i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
 
-for func, per_len, name_fmt, kwargs_fn in indicator_cfg:
-    if per_len:
-        for l in lengths:
-            res = func(**kwargs_fn(df_new, l))
-            # Series 반환 시
-            if isinstance(res, pd.Series):
-                col = name_fmt.format(length=l)
-                res.name = col
-                series_list.append(res)
-            # DataFrame 반환 시
-            else:
-                for col in res.columns:
-                    tmp = res[col].copy()
-                    tmp.name = col
-                    series_list.append(tmp)
-            pbar.update(1)
-    else:
-        res = func(**kwargs_fn(df_new, None))
-        if isinstance(res, pd.Series):
-            series_list.append(res.rename(res.name))
-        else:
-            for col in res.columns:
-                tmp = res[col].copy()
-                tmp.name = col
-                series_list.append(tmp)
-        
-        # 진행바 업데이트           
-        pbar.update(1)
+taName = "ForceIndex"
+for i in lengths :
+    dfs["fIndex-" + str(i)] = ta.efi(close = dfs['Close'], volume = dfs['Volume'], length = i)
 
-pbar.close()
+taName = "MA"
+for i in lengths :
+    dfs['EMA-' + str(i)] = ta.ema(close = dfs['Close'], length = i)
+    dfs['Vol-' + str(i)] = ta.ema(close = dfs['Volume'], length = i)
 
-# ──────────────────────────────────────────────────
-# 4) Pivot Points 예시 (shift 1회만)
-# ──────────────────────────────────────────────────
-h1 = df_new.High.shift(1)
-l1 = df_new.Low.shift(1)
-c1 = df_new.Close.shift(1)
+taName = "ROC"
+for i in lengths :
+    dfs['ROC-' + str(i)] = ta.roc(dfs['Close'], length = i)
 
-pivot = (h1 + l1 + c1) / 3
-series_list.append(pivot.rename('Pivot'))
-series_list.append((2*pivot - l1).rename('Pivot_R1'))
-series_list.append((2*pivot - h1).rename('Pivot_S1'))
-series_list.append((2*pivot - l1).rename('Pivot_R2'))
-series_list.append((2*pivot - h1).rename('Pivot_S2'))
+#추세 전환
+kind = "추세전환"
+taName = "PSAR"
+dfs2 = ta.psar(high = dfs['High'], low = dfs['Low'])
+dfs = pd.concat([dfs, dfs2],axis = 1)
 
-# ──────────────────────────────────────────────────
-# 5) 신규 지표 DataFrame 결합
-# ──────────────────────────────────────────────────
-df_ind_new = pd.concat(series_list, axis=1)
-df_final_new = pd.concat([df_new, df_ind_new], axis=1)
+taName = "NVI"
+for i in lengths :
+    dfs['NVI-' + str(i)] = ta.nvi(close = dfs['Close'], volume = dfs['Volume'], length = i) 
 
-# ──────────────────────────────────────────────────
-# 6) 기존 결과와 병합 후 Parquet 저장
-# ──────────────────────────────────────────────────
-if not df_old.empty:
-    df_out = pd.concat([df_old, df_final_new], ignore_index=True)
-else:
-    df_out = df_final_new
+#모멘텀
+kind = "모멘텀"
+taName = "CMF"
+for i in lengths :
+    dfs["CMF-" + str(i)] = ta.cmf(dfs['High'], dfs['Low'], dfs['Close'], dfs['Volume'], length = i)
 
-# Parquet으로 저장 (컬럼 단위 압축 + 스키마 유지)
+taName = "PPO"
+for i in lengths :
+    dfs2 = ta.ppo(dfs['Close'], fast = i*1.3, slow = i*3, signal = i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
 
-df_out.to_parquet(PARQUET_FILE, index=False)
-df_out.to_csv(CSV_FILE, index=False, encoding='utf-8-sig')
+taName = "PVO"
+for i in lengths :
+    dfs2 = ta.pvo(volume = dfs['Volume'], fast = i*1.3, slow = i*2.6, signal = i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
 
-print(f"증분 지표 계산 완료: {len(df_final_new)} rows added. 총 {len(df_out)} rows 저장됨.")
+taName = "RSI"
+for i in lengths :
+    dfs2 = ta.rsi(dfs['Close'], length = i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
+
+taName = "sStochastic"
+for i in lengths :
+    dfs2 = ta.stoch(high = dfs['High'], low = dfs['Low'], close = dfs['Close'], k= i, d= 3, smooth_k=3)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
+
+taName = "sRSI"
+for i in lengths :
+    dfs2 = ta.stochrsi(dfs['Close'], length = i, rsi_length = i, k = 3, d = 3)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
+
+taName="TRIX"
+for i in lengths :
+    dfs2 = ta.trix(dfs['Close'], length = i*2, signal = i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
+
+taName = "UO"
+for i in lengths :
+    dfs["UO-" + str(i)] = ta.uo(high = dfs['High'], low = dfs['Low'], close = dfs['Close'], fast=i, medium = i*2, slow=i*3)
+
+taName = "WillR"
+for i in lengths :
+    dfs["WillR-" + str(i)] = ta.willr(high = dfs['High'], low = dfs['Low'], close = dfs['Close'], length = i)
+
+taName = "PSI"
+for i in lengths :
+    dfs["PSI-" + str(i)] =ta.psl(close = dfs['Close'], length = i)
+
+taName = "Disparity"                # 이격도
+for i in lengths :
+    dfs['MA-' + str(i)] = ta.ema(close=dfs['Close'], length=i)
+    dfs['Disparity-' + str(i)] = dfs['Close'] - dfs['MA-' + str(i)]
+
+taName = "ADX"
+for i in lengths :
+    dfs2 = ta.adx(high = dfs['High'], low = dfs['Low'], close = dfs['Close'], length= i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
+
+taName = "CCI"
+for i in lengths :
+    dfs["CCI-" + str(i)] = ta.cci(high = dfs['High'], low = dfs['Low'], close = dfs['Close'], length = i)
+
+taName = "MACD"
+for i in lengths :
+    dfs2 = ta.macd(dfs['Close'], fast = i*1.3, slow = i*3, signal = i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
+
+taName = "MassIndex"
+for i in lengths :
+    dfs['mIndex-' + str(i)] = ta.massi(high = dfs['High'], low = dfs['Low'], fast = i, slow = i*2.5)
+
+kind = "시장강도"
+taName = "ADline"
+dfs["ADLine"] = ta.ad(dfs['High'], dfs['Low'], dfs['Close'], dfs['Volume'])
+
+taName = "CO"       # Chaikin Oscillator
+for i in lengths :
+    dfs["CO-" + str(i)] = ta.adosc(dfs['High'], dfs['Low'], dfs['Close'], dfs['Volume'],  fast =3, slow  = i*2)
+
+taName = "EOM"
+for i in lengths :
+    dfs["EOM-" + str(i)] = ta.eom(high = dfs['High'], low = dfs['Low'], close = dfs['Close'], volume = dfs['Volume'], length = i)
+
+taName = "OBV"
+dfs['OBV'] = ta.obv(close = dfs['Close'], volume = dfs['Volume'])
+
+taName = "PVT"
+dfs['PVT'] = ta.pvt(close = dfs['Close'], volume = dfs['Volume'])
+
+taName = "VolumeRatio"
+for i in lengths :
+    dfs['AvgVol'] = ta.sma(dfs['Volume'], length=i)
+    dfs['VRatio' + str(i)] = dfs['Volume'] / dfs['AvgVol']
+
+#변동성
+kind = "Volatity"
+taName = "ATR"
+for i in lengths :
+    dfs["ATR-" + str(i)] = ta.atr(high = dfs['High'], low = dfs['Low'], close = dfs['Close'], length = i)
+
+taName = "BB"
+for i in lengths :
+    dfs2 = ta.bbands(dfs['Close'], length = i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
+
+taName = "dChannel"             #돈치안 채널(Donchian Channel)
+dfs2 =ta.donchian(high = dfs['High'], low = dfs['Low'])
+dfs = pd.concat([dfs, dfs2],axis = 1)
+
+taName = "kChannel"             # 켈트너 채널(Keltner Channel)
+for i in lengths :
+    dfs2 =ta.kc(high = dfs['High'], low = dfs['Low'], close = dfs['Close'], length = i)
+    dfs = pd.concat([dfs, dfs2],axis = 1)
+
+# 기타 (지지 저항)
+kind = "지지 저항"
+taName = "Pivot Point"
+dfs['Pivot'] = (dfs['High'].shift(1) + dfs['Low'].shift(1) + dfs['Close'].shift(1)) / 3
+dfs['Pivot_R1'] = (2 * dfs['Pivot']) - dfs['Low'].shift(1)
+dfs['Pivot_S1'] = (2 * dfs['Pivot']) - dfs['High'].shift(1)
+dfs['Pivot_R2'] = dfs['Pivot'] + (dfs['High'].shift(1) - dfs['Low'].shift(1))
+dfs['Pivot_S2'] = dfs['Pivot'] - (dfs['High'].shift(1) - dfs['Low'].shift(1))
+
+dfs.to_parquet(PARQUET_FILE, index=False)
+# df_out.to_csv(CSV_FILE, index=False, encoding='utf-8-sig')
+
+print(f"완료: 신규 {len(df_final_new)}행 추가, 총 {len(dfs)}행 저장됨.")
