@@ -97,7 +97,7 @@ if not result_list:
 final_df = pd.concat(result_list, ignore_index=True)
 
 # 4-2) 컬럼 순서 재정렬
-cols = ["Code", "Name", "Market", "date",
+cols = ["Code", "Company", "Market", "date",
         "open", "high", "low", "close",
         "volume", "change"]
 final_df = final_df[cols]
@@ -120,3 +120,4 @@ if errors:
     print(f"❌ 에러 로그 저장: {ERROR_LOG} ({len(errors)}건)")
 else:
     print("✅ 모든 종목 정상 수집됨. 에러 없음.")
+
