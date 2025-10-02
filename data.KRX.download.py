@@ -73,7 +73,7 @@ for code in tqdm(codes,
 
         # 3-4) 메타 컬럼 추가
         df["Code"]   = code
-        df["Name"]   = name
+        df["Company"]   = name
         df["Market"] = market
 
         result_list.append(df)
