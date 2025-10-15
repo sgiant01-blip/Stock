@@ -5,8 +5,6 @@ import gymnasium as gym
 from stable_baselines3.common.vec_env import DummyVecEnv
 from bayes_opt import BayesianOptimization
 
-
-# 1) 동적 룰 베이스 워밍업
 def get_initial_weights(df, method='inv_vol', vol_col='vol_ma5', sharpe_window=12):
     codes = df['Code'].unique()
     if method == 'inv_vol':
@@ -24,13 +22,7 @@ def get_initial_weights(df, method='inv_vol', vol_col='vol_ma5', sharpe_window=1
     w = w / w.sum()
     return w.values
 
-# 2) 강건 최적화 함수
-def robust_optimize_weights(w_rl,
-                            VaR_limit=0.05,
-                            w_min=0.0,
-                            w_max=1.0,
-                            cov=None,
-                            alpha=0.95):
+def robust_optimize_weights(w_rl, VaR_limit=0.05, w_min=0.0, w_max=1.0, cov=None, alpha=0.95):
     n = len(w_rl)
     w = cp.Variable(n)
     constraints = [
@@ -44,125 +36,196 @@ def robust_optimize_weights(w_rl,
     prob.solve(solver=cp.SCS, verbose=False)
     return w.value
 
-
-# 3) 강화학습 환경 정의
 class PortfolioEnv(gym.Env):
     """
-    state: (n_assets × n_factors) flatten
-    action: 자산별 가중치 (합=1)
-    reward: 다음 월말 수익 − λ * 월말 리턴의 표준편차
+    월말별 alive_codes 기준으로 observation/action space 동적으로 관리
     """
-    def __init__(self, data, factor_cols, rebalance_dates, risk_lambda=0.5):
-        super().__init__()
+    def __init__(self, data, factor_cols, rebalance_dates, alive_codes_per_month, **kwargs):
+        super().__init__()        
         self.data = data
         self.factors = factor_cols
-        self.dates = rebalance_dates       # month_end 리스트
-        self.risk_lambda = risk_lambda
-
-        # 고정된 순서의 전체 종목코드
-        self.codes = sorted(self.data['Code'].unique())
-        self.n = len(self.codes)
+        self.dates = rebalance_dates
+        self.alive_codes_per_month = alive_codes_per_month
+        self.risk_lambda = kwargs.get('risk_lambda', 0.5)
         self.current_step = 0
-
-        self.action_space = gym.spaces.Box(
-            low=0, high=1, shape=(self.n,), dtype=np.float32
-        )
-        self.observation_space = gym.spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(self.n * len(self.factors),),
-            dtype=np.float32
-        )
+        
+        # 최대 종목 수로 고정
+        self.max_codes = max(len(codes) for codes in alive_codes_per_month.values())
+        print(f"최대 종목 수: {self.max_codes}")
+        
+        self.codes = self.alive_codes_per_month[self.dates[self.current_step]]
+        self.n = len(self.codes)
+        
+        # Space를 최대 크기로 고정
+        self.action_space = gym.spaces.Box(low=0, high=1, shape=(self.max_codes,), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, 
+                                                shape=(self.max_codes * len(self.factors),), 
+                                                dtype=np.float32)
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         self.current_step = 0
+        self.codes = self.alive_codes_per_month[self.dates[self.current_step]]
+        self.n = len(self.codes)
         obs = self._get_state()
         return obs, {}
 
     def _get_state(self):
-        # 이번 리밸런스 날짜 기준 슬라이스
         dt = self.dates[self.current_step]
-        df_slice = (
-            self.data[self.data['month_end'] == dt]
-            .set_index('Code')
-            .reindex(self.codes)              # 누락 종목 0으로 채움
-        )
-        X = df_slice[self.factors].fillna(0).values  # (n_assets, n_factors)
-        return X.flatten()
+        codes = self.alive_codes_per_month[dt]
+        
+        # date == dt로 필터링 (month_end 아님!)
+        df = (self.data[(self.data['date'] == dt) & (self.data['Code'].isin(codes))]
+              .drop_duplicates(subset='Code', keep='last')
+              .sort_values('Code'))
+        
+        # 최대 크기로 패딩
+        arr = np.zeros((self.max_codes, len(self.factors)), dtype=np.float32)
+        
+        for i, code in enumerate(codes):
+            if i >= self.max_codes:
+                break
+            row = df[df['Code'] == code]
+            if not row.empty:
+                vals = row[self.factors].values[0]
+                vals = np.nan_to_num(vals, nan=0.0, posinf=0.0, neginf=0.0)
+                arr[i] = vals
+        
+        return arr.flatten()
 
     def step(self, action):
-        # 1) 비음수, 합1 정규화
-        w = np.clip(action, 0, 1)
-        w = w / (w.sum() + 1e-8)
-
-        # 2) 다음 월말 리턴 계산
         dt0 = self.dates[self.current_step]
+        
+        # 마지막 날짜인지 확인
+        if self.current_step >= len(self.dates) - 1:
+            obs = self._get_state()
+            return obs, 0.0, True, False, {}
+        
         dt1 = self.dates[self.current_step + 1]
-        df0 = (
-            self.data[self.data['month_end'] == dt0]
-            .set_index('Code')
-            .reindex(self.codes)
-        )
-        df1 = (
-            self.data[self.data['month_end'] == dt1]
-            .set_index('Code')
-            .reindex(self.codes)
-        )
-        # 종가 누락은 전월말 종가로 채우거나 0 대체
-        close0 = df0['close'].fillna(method='ffill').fillna(0).values
-        close1 = df1['close'].fillna(method='ffill').fillna(0).values
+        codes0 = self.alive_codes_per_month[dt0]
+        codes1 = self.alive_codes_per_month[dt1]
+        
+        # shape 맞추기 (교집합)
+        common_codes = list(set(codes0) & set(codes1))
+        if not common_codes:
+            self.current_step += 1
+            done = (self.current_step >= len(self.dates) - 1)
+            truncated = False
+            obs = self._get_state()
+            return obs, 0.0, done, truncated, {}
+        
+        # date == dt로 필터링 (month_end 아님!)
+        df0 = (self.data[(self.data['date'] == dt0) & (self.data['Code'].isin(common_codes))]
+               .drop_duplicates(subset='Code', keep='last')
+               .set_index('Code')
+               .reindex(common_codes))
+        
+        df1 = (self.data[(self.data['date'] == dt1) & (self.data['Code'].isin(common_codes))]
+               .drop_duplicates(subset='Code', keep='last')
+               .set_index('Code')
+               .reindex(common_codes))
+        
+        close0 = df0['close'].ffill().fillna(0).values
+        close1 = df1['close'].ffill().fillna(0).values
+        
+        close0 = np.nan_to_num(close0, nan=1.0, posinf=1.0, neginf=1.0)
+        close1 = np.nan_to_num(close1, nan=1.0, posinf=1.0, neginf=1.0)
+        
+        # action을 실제 종목 수만큼만 사용
+        action_slice = action[:len(codes0)]
+        w = np.array([action_slice[codes0.index(code)] if code in codes0 else 0.0 
+                      for code in common_codes])
+        w = np.clip(w, 0, 1)
+        w = w / (w.sum() + 1e-8)
+        
         rets = close1 / (close0 + 1e-8) - 1
-
-        # 3) 포트폴리오 리턴·리스크·보상
+        rets = np.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
+        
         port_ret = np.dot(w, rets)
-        port_vol = np.std(w * rets)
+        port_vol = np.std(w * rets) + 1e-8
         reward = port_ret - self.risk_lambda * port_vol
-
-        # 4) 다음 스텝 및 종료 여부
+        
+        if np.isnan(reward) or np.isinf(reward):
+            reward = 0.0
+        
         self.current_step += 1
         done = (self.current_step >= len(self.dates) - 1)
+        truncated = False
+        
+        if not done:
+            self.codes = self.alive_codes_per_month[self.dates[self.current_step]]
+            self.n = len(self.codes)
+        
         obs = self._get_state()
-        return obs, reward, done, {}
+        info = {}
+        
+        return obs, reward, done, truncated, {}
 
-
-# 4) 베이지안 최적화: RL 하이퍼파라미터 튜닝
 def optimize_hyperparams(env_fn, init_params, pbounds, n_iter=20):
-    """
-    env_fn: dict({'risk_lambda':float}) → PortfolioEnv
-    init_params: {'algo': PPO/A2C/DQN, 'timesteps': int}
-    pbounds: {'learning_rate':(...), 'gamma':(...), 'risk_lambda':(...)}
-    """
+    print("베이지안 최적화 시작...")
+    print(f"총 {5 + n_iter}번 시도, 각 {init_params['timesteps']:,} 스텝")
+    
+    iteration_count = [0]
+    
     def train_and_eval(**params):
-        # env-only 파라미터 분리
+        iteration_count[0] += 1
+        print(f"\n{'='*60}")
+        print(f"시도 [{iteration_count[0]}/{5 + n_iter}]")
+        print(f"파라미터: lr={params.get('learning_rate', 0):.6f}, "
+              f"gamma={params.get('gamma', 0):.4f}, "
+              f"risk_lambda={params.get('risk_lambda', 0):.3f}")
+        print(f"{'='*60}")
+        
+        import time
+        start_time = time.time()
+        
         risk = params.pop('risk_lambda')
         env = DummyVecEnv([lambda: env_fn({'risk_lambda': risk})])
-
-        # 모델 생성자 허용 키만 전달
         allowed = ['learning_rate', 'gamma']
         model_kwargs = {k: params[k] for k in allowed if k in params}
-
-        model = init_params['algo']('MlpPolicy', env, **model_kwargs)
+        model = init_params['algo']('MlpPolicy', env, verbose=0, **model_kwargs)
+        
+        print("학습 시작...", flush=True)
         model.learn(total_timesteps=init_params['timesteps'])
-
-        # 평균 에피소드 리워드
-        return float(np.mean(model.ep_info_buffer))
-
+        
+        elapsed = time.time() - start_time
+        
+        ep_rewards = [ep_info.get("r", 0) for ep_info in model.ep_info_buffer if "r" in ep_info]
+        score = np.mean(ep_rewards) if ep_rewards else 0.0
+        
+        print(f"✓ 완료! 점수: {score:.4f}, 소요시간: {elapsed:.1f}초")
+        return float(score)
+    
     optimizer = BayesianOptimization(
         f=train_and_eval,
         pbounds=pbounds,
-        random_state=42
+        random_state=42,
+        verbose=2
     )
+    
+    import time
+    total_start = time.time()
     optimizer.maximize(init_points=5, n_iter=n_iter)
+    total_elapsed = time.time() - total_start
+    
+    print(f"\n{'='*60}")
+    print(f"최적화 완료!")
+    print(f"최대 점수: {optimizer.max['target']:.4f}")
+    print(f"총 소요시간: {total_elapsed/60:.1f}분")
+    print(f"{'='*60}")
+    
     return optimizer.max['params']
 
-
-# 5) 앙상블: 여러 RL 모델 제안 가중치 평균 → 강건 최적화
-def ensemble_weights(env, trained_models, cov):
+def ensemble_weights(env, trained_models, cov, dt, codes):
     w_list = []
+    # 환경을 해당 월말 기준으로 초기화
+    env.current_step = env.dates.index(dt)
+    env.codes = codes
+    env.n = len(codes)
+    obs, _ = env.reset()
     for model in trained_models:
-        obs, _ = env.reset()
         action, _ = model.predict(obs)
-        w_list.append(action)
+        w_list.append(action[:len(codes)])  # 실제 종목 수만큼만 사용
     w_ens = np.mean(np.vstack(w_list), axis=0)
-    return robust_optimize_weights(w_ens, cov=cov)
+    w_final = robust_optimize_weights(w_ens, cov=cov)
+    return w_final
