@@ -20,7 +20,6 @@ def select_top_stocks(df: pd.DataFrame,
                       top_n: int = 10,
                       min_volume: float = 1e4,
                       min_turnover: float = 1e6) -> pd.DataFrame:
-    # … (기존 구현 그대로) …
     result = []
     for dt in sorted(df['month_end'].unique()):
         uni = df[df['month_end'] == dt].copy()
@@ -66,14 +65,11 @@ def main():
 
     # 2) 날짜별 Z-스코어 컬럼 추가
     for col in ['market_cap','turnover5','vol_ma5','mom1m']:
-        df[f'{col}_z'] = (
-            df.groupby('date')[col]
-              .transform(lambda x: (x - x.mean())/(x.std()+1e-8))
+        df[f'{col}_z'] = df.groupby('date')[col].transform(
+            lambda x: (x - x.mean())/(x.std()+1e-8)
         )
-
-    # 2-1) 종합 점수(score) 컬럼 생성
-    factor_cols = ['market_cap_z','turnover5_z','vol_ma5_z','mom1m_z']
-    df['score'] = df[factor_cols].sum(axis=1)      # 또는 .mean(axis=1)
+    df['score'] = df[['market_cap_z','turnover5_z','vol_ma5_z','mom1m_z']].sum(axis=1)
+    df = apply_inverse_vol_weight(df)
 
     # 3) 리밸런싱 종목 선정
     selected_df = select_top_stocks(df)
